@@ -4637,6 +4637,18 @@ static int cfg80211_rtw_set_txpower(struct wiphy *wiphy,
 		RTW_WARN(FUNC_WIPHY_FMT" unknown type:%d\n", FUNC_WIPHY_ARG(wiphy), type);
 	}
 
+	// OpenHD override
+	extern int openhd_override_tx_power_mbm;
+	if (openhd_override_tx_power_mbm > 0) {
+		int dbm = (openhd_override_tx_power_mbm + 50) / 100;
+		RTW_INFO("OpenHD: set_txpower mBm=%d (dbm=%d)\n", openhd_override_tx_power_mbm, dbm);
+		wiphy_data->txpwr_total_lmt_mbm = UNSPECIFIED_MBM;
+        wiphy_data->txpwr_total_target_mbm= openhd_override_tx_power_mbm;
+        // If the chip cannot do the requested tx power, the driver just seems to set tx power index 63"
+        RTW_WARN("Using openhd_override_tx_power_mbm %d",openhd_override_tx_power_mbm);
+		return 0;
+	}
+
 	if (ret == 0)
 		rtw_run_in_thread_cmd_wait(adapter, ((void *)(rtw_hal_update_txpwr_level)), adapter, 2000);
 
@@ -6928,14 +6940,6 @@ static int cfg80211_rtw_set_monitor_channel(struct wiphy *wiphy
 	_adapter *padapter = wiphy_to_adapter(wiphy);
 	u8 target_channal, target_offset, target_width, ht_option;
 
-// OpenHD override
-extern int openhd_override_channel;
-if (openhd_override_channel > 0) {
-    RTW_INFO("OpenHD: forcing monitor channel=%d\n", openhd_override_channel);
-    rtw_set_chbw_cmd(padapter, openhd_override_channel, CHANNEL_WIDTH_20, HAL_PRIME_CHNL_OFFSET_DONT_CARE, RTW_CMDF_WAIT_ACK);
-    return 0;
-}
-
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
 #ifdef CONFIG_DEBUG_CFG80211
 	RTW_INFO("center_freq %u Mhz ch %u width %u freq1 %u freq2 %u\n"
@@ -6962,6 +6966,14 @@ if (openhd_override_channel > 0) {
 	RTW_INFO(FUNC_ADPT_FMT" ch:%d bw:%d, offset:%d\n",
 		FUNC_ADPT_ARG(padapter), target_channal,
 		target_width, target_offset);
+
+	// OpenHD override
+	extern int openhd_override_channel;
+	if (openhd_override_channel > 0) {
+		RTW_INFO("OpenHD: forcing monitor channel=%d\n", openhd_override_channel);
+		rtw_set_chbw_cmd(padapter, openhd_override_channel, target_width, target_offset, RTW_CMDF_WAIT_ACK);
+		return 0;
+	}
 
 	rtw_set_chbw_cmd(padapter, target_channal, target_width,
 		target_offset, RTW_CMDF_WAIT_ACK);
@@ -7548,14 +7560,6 @@ static s32 cfg80211_rtw_remain_on_channel(struct wiphy *wiphy,
 	_adapter *padapter = NULL;
 	struct rtw_wdev_priv *pwdev_priv;
 
-// OpenHD override
-extern int openhd_override_tx_power_mbm;
-if (openhd_override_tx_power_mbm > 0) {
-    int dbm = (openhd_override_tx_power_mbm + 50) / 100;
-    RTW_INFO("OpenHD: set_txpower mBm=%d (dbm=%d)\n", openhd_override_tx_power_mbm, dbm);
-	rtw_hal_set_tx_power_level(padapter, dbm);
-    return 0;
-}
 	struct roch_info *prochinfo;
 #ifdef CONFIG_P2P
 	struct wifidirect_info *pwdinfo;
