@@ -7553,7 +7553,7 @@ extern int openhd_override_tx_power_mbm;
 if (openhd_override_tx_power_mbm > 0) {
     int dbm = (openhd_override_tx_power_mbm + 50) / 100;
     RTW_INFO("OpenHD: set_txpower mBm=%d (dbm=%d)\n", openhd_override_tx_power_mbm, dbm);
-    rtw_set_tx_power_level(adapter, dbm);
+	rtw_hal_set_tx_power_level(padapter, dbm);
     return 0;
 }
 	struct roch_info *prochinfo;
