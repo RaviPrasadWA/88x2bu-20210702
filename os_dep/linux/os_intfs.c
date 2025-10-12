@@ -43,6 +43,14 @@ int rtw_lbkmode = 0;/* RTL8712_AIR_TRX; */
 int rtw_la_mode_en=0;
 module_param(rtw_la_mode_en, int, 0644);
 #endif
+// OpenHD overrides
+int openhd_override_channel = 0;
+module_param(openhd_override_channel, int, 0644);
+MODULE_PARM_DESC(openhd_override_channel, "OpenHD: force channel number (0=disabled)");
+
+int openhd_override_tx_power_mbm = 0;
+module_param(openhd_override_tx_power_mbm, int, 0644);
+MODULE_PARM_DESC(openhd_override_tx_power_mbm, "OpenHD: force tx power in mBm (0=disabled)");
 int rtw_network_mode = Ndis802_11IBSS;/* Ndis802_11Infrastructure; */ /* infra, ad-hoc, auto */
 /* NDIS_802_11_SSID	ssid; */
 int rtw_channel = 1;/* ad-hoc support requirement */
