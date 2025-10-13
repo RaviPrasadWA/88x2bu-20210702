@@ -4645,8 +4645,9 @@ static int cfg80211_rtw_set_txpower(struct wiphy *wiphy,
 		wiphy_data->txpwr_total_lmt_mbm = UNSPECIFIED_MBM;
         wiphy_data->txpwr_total_target_mbm= openhd_override_tx_power_mbm;
         // If the chip cannot do the requested tx power, the driver just seems to set tx power index 63"
-        RTW_WARN("Using openhd_override_tx_power_mbm %d",openhd_override_tx_power_mbm);
-		return 0;
+		adapter->openhd_override_tx_power_mbm = openhd_override_tx_power_mbm;
+		RTW_WARN("Using openhd_override_tx_power_mbm %d", openhd_override_tx_power_mbm);
+		ret = 0;
 	}
 
 	if (ret == 0)
@@ -4672,11 +4673,20 @@ static int cfg80211_rtw_get_txpower(struct wiphy *wiphy,
 	if (wdev && wdev_to_ndev(wdev)) {
 		_adapter *adapter = (_adapter *)rtw_netdev_priv(wdev_to_ndev(wdev));
 		mbm = rtw_adapter_get_oper_txpwr_max_mbm(adapter, 1);
+		if (adapter && adapter->openhd_override_tx_power_mbm > 0) {
+			mbm = adapter->openhd_override_tx_power_mbm;
+			RTW_INFO("RTW[cdn1]: get_txpower override:(%d mBm)\n", mbm);
+		}
 		RTW_INFO(FUNC_ADPT_FMT" total max: %d mbm\n", FUNC_ADPT_ARG(adapter), mbm);
 	} else
 #endif
 	{
+		_adapter *adapter = wiphy_to_adapter(wiphy);
 		mbm = rtw_get_oper_txpwr_max_mbm(dvobj, 1);
+		if (adapter && adapter->openhd_override_tx_power_mbm > 0) {
+			mbm = adapter->openhd_override_tx_power_mbm;
+			RTW_INFO("RTW[cdn2]: get_txpower override:(%d mBm)\n", mbm);
+		}
 		RTW_INFO(FUNC_WIPHY_FMT" total max: %d mbm\n", FUNC_WIPHY_ARG(wiphy), mbm);
 	}
 
