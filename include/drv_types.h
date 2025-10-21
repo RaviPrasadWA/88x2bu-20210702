@@ -242,9 +242,6 @@ struct registry_priv {
 #ifdef CONFIG_TX_EARLY_MODE
 	u8   early_mode;
 #endif
-#ifdef CONFIG_SW_LED
-	u8   led_ctrl;
-#endif
 #ifdef CONFIG_NARROWBAND_SUPPORTING
 	u8	rtw_nb_config;
 #endif
@@ -1614,7 +1611,6 @@ struct _ADAPTER {
 	int	DriverState;/* for disable driver using module, use dongle to replace module. */
 	int	pid[3];/* process id from UI, 0:wps, 1:hostapd, 2:dhcpcd */
 	int	bDongle;/* build-in module or external dongle */
-	int openhd_override_tx_power_mbm; /* OpenHD txpower override value in mBm */
 
 	#if defined(CONFIG_AP_MODE) && defined(CONFIG_SUPPORT_MULTI_BCN)
 	_list	list;
@@ -2040,5 +2036,9 @@ int rtw_suspend_free_assoc_resource(_adapter *padapter);
 	#include <pci_ops.h>
 	#include <pci_hal.h>
 #endif
+
+// OpenHD crda workaround
+int get_openhd_override_channel(void);
+int get_openhd_override_tx_power_mbm(void);
 
 #endif /* __DRV_TYPES_H__ */

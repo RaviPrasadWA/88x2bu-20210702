@@ -20,7 +20,7 @@
  */
 #define AUTOCONF_INCLUDED
 #define RTL871X_MODULE_NAME "88x2BU"
-#define DRV_NAME "rtl88x2bu"
+#define DRV_NAME "rtl88x2bu_ohd"
 
 /* Set CONFIG_RTL8822B from Makefile */
 #ifndef CONFIG_RTL8822B
@@ -177,7 +177,7 @@
 
 #define CONFIG_RTW_LED
 #ifdef CONFIG_RTW_LED
-// nrm	#define CONFIG_RTW_SW_LED
+	#define CONFIG_RTW_SW_LED
 	#ifdef CONFIG_RTW_SW_LED
 		/* #define CONFIG_RTW_LED_HANDLED_BY_CMD_THREAD */
 	#endif
@@ -186,8 +186,7 @@
 #define USB_INTERFERENCE_ISSUE /* this should be checked in all usb interface */
 #define CONFIG_GLOBAL_UI_PID
 
-// nrm
-#define CONFIG_RTW_80211K
+/*#define CONFIG_RTW_80211K*/
 
 /*#define CONFIG_ADAPTOR_INFO_CACHING_FILE */ /* now just applied on 8192cu only, should make it general... */
 /*#define CONFIG_RESUME_IN_WORKQUEUE */
