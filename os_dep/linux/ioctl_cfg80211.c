@@ -3177,413 +3177,421 @@ void rtw_cfg80211_indicate_scan_done_for_buddy(_adapter *padapter, bool bscan_ab
 	}
 }
 #endif /* CONFIG_CONCURRENT_MODE */
-
 static int cfg80211_rtw_scan(struct wiphy *wiphy
 	#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
 	, struct net_device *ndev
 	#endif
 	, struct cfg80211_scan_request *request)
 {
-	int i;
-	u8 _status = _FALSE;
-	int ret = 0;
-	struct sitesurvey_parm parm;
-	_irqL	irqL;
-	u8 survey_times = 3;
-	u8 survey_times_for_one_ch = 6;
-	struct cfg80211_ssid *ssids = request->ssids;
-	int social_channel = 0, j = 0;
-	bool need_indicate_scan_done = _FALSE;
-	bool ps_denied = _FALSE;
-	u8 ssc_chk;
-	_adapter *padapter;
-	struct wireless_dev *wdev;
-	struct rtw_wdev_priv *pwdev_priv;
-	struct mlme_priv *pmlmepriv = NULL;
-#ifdef CONFIG_P2P
-	struct wifidirect_info *pwdinfo;
-#endif /* CONFIG_P2P */
-
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
-	wdev = request->wdev;
-	#if defined(RTW_DEDICATED_P2P_DEVICE)
-	if (wdev == wiphy_to_pd_wdev(wiphy))
-		padapter = wiphy_to_adapter(wiphy);
-	else
-	#endif
-	if (wdev_to_ndev(wdev))
-		padapter = (_adapter *)rtw_netdev_priv(wdev_to_ndev(wdev));
-	else {
-		ret = -EINVAL;
-		goto exit;
-	}
-#else
-	if (ndev == NULL) {
-		ret = -EINVAL;
-		goto exit;
-	}
-	padapter = (_adapter *)rtw_netdev_priv(ndev);
-	wdev = ndev_to_wdev(ndev);
-#endif
-
-	pwdev_priv = adapter_wdev_data(padapter);
-	pmlmepriv = &padapter->mlmepriv;
-#ifdef CONFIG_P2P
-	pwdinfo = &(padapter->wdinfo);
-#endif /* CONFIG_P2P */
-
-	RTW_INFO(FUNC_ADPT_FMT"%s\n", FUNC_ADPT_ARG(padapter)
-		, wdev == wiphy_to_pd_wdev(wiphy) ? " PD" : "");
-
-#ifdef CONFIG_RTW_SCAN_RAND
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0))
-	if (request->flags & NL80211_SCAN_FLAG_RANDOM_ADDR) {
-		get_random_mask_addr(pwdev_priv->pno_mac_addr, request->mac_addr,
-				     request->mac_addr_mask);
-		print_hex_dump(KERN_DEBUG, "random mac_addr: ", 
-			DUMP_PREFIX_OFFSET, 16, 1, pwdev_priv->pno_mac_addr, ETH_ALEN, 1);
-	}
-	else
-		memset(pwdev_priv->pno_mac_addr, 0xFF, ETH_ALEN);
-
-#endif
-#endif
-
-
-#if 1
-	ssc_chk = rtw_sitesurvey_condition_check(padapter, _TRUE);
-
-	if (ssc_chk == SS_DENY_MP_MODE)
-		goto bypass_p2p_chk;
-#ifdef DBG_LA_MODE
-	if (ssc_chk == SS_DENY_LA_MODE)
-		goto bypass_p2p_chk;
-#endif
-#ifdef CONFIG_P2P
-	if (pwdinfo->driver_interface == DRIVER_CFG80211) {
-		if (request->n_ssids && ssids
-			&& _rtw_memcmp(ssids[0].ssid, "DIRECT-", 7)
-			&& rtw_get_p2p_ie((u8 *)request->ie, request->ie_len, NULL, NULL)
-		) {
-			if (rtw_p2p_chk_state(pwdinfo, P2P_STATE_NONE)) {
-				if (!rtw_p2p_enable(padapter, P2P_ROLE_DEVICE)) {
-					ret = -EOPNOTSUPP;
-					goto exit;
-				}
-			} else {
-				rtw_p2p_set_pre_state(pwdinfo, rtw_p2p_state(pwdinfo));
-				#ifdef CONFIG_DEBUG_CFG80211
-				RTW_INFO("%s, role=%d, p2p_state=%d\n", __func__, rtw_p2p_role(pwdinfo), rtw_p2p_state(pwdinfo));
-				#endif
-			}
-			rtw_p2p_set_state(pwdinfo, P2P_STATE_LISTEN);
-
-			if (request->n_channels == 3 &&
-				request->channels[0]->hw_value == 1 &&
-				request->channels[1]->hw_value == 6 &&
-				request->channels[2]->hw_value == 11
-			)
-				social_channel = 1;
-		}
-	}
-#endif /*CONFIG_P2P*/
-
-	if (request->ie && request->ie_len > 0)
-		rtw_cfg80211_set_probe_req_wpsp2pie(padapter, (u8 *)request->ie, request->ie_len);
-
-bypass_p2p_chk:
-
-	switch (ssc_chk) {
-		case SS_ALLOW :
-			break;
-
-		case SS_DENY_MP_MODE:
-			ret = -EPERM;
-			goto exit;
-		#ifdef DBG_LA_MODE
-		case SS_DENY_LA_MODE:
-			ret = -EPERM;
-			goto exit;
-		#endif
-		#ifdef CONFIG_RTW_REPEATER_SON
-		case SS_DENY_RSON_SCANING :
-		#endif
-		case SS_DENY_BLOCK_SCAN :
-		case SS_DENY_SELF_AP_UNDER_WPS :
-		case SS_DENY_SELF_AP_UNDER_LINKING :
-		case SS_DENY_SELF_AP_UNDER_SURVEY :
-		case SS_DENY_SELF_STA_UNDER_SURVEY :
-		#ifdef CONFIG_CONCURRENT_MODE
-		case SS_DENY_BUDDY_UNDER_LINK_WPS :
-		#endif
-		case SS_DENY_BUSY_TRAFFIC :
-		case SS_DENY_ADAPTIVITY:
-			need_indicate_scan_done = _TRUE;
-			goto check_need_indicate_scan_done;
-
-		case SS_DENY_BY_DRV :
-			#ifdef CONFIG_NOTIFY_SCAN_ABORT_WITH_BUSY
-			ret = -EBUSY;
-			goto exit;
-			#else
-			need_indicate_scan_done = _TRUE;
-			goto check_need_indicate_scan_done;
-			#endif
-			break;
-
-		case SS_DENY_SELF_STA_UNDER_LINKING :
-			ret = -EBUSY;
-			goto check_need_indicate_scan_done;
-
-		#ifdef CONFIG_CONCURRENT_MODE
-		case SS_DENY_BUDDY_UNDER_SURVEY :
-			{
-				bool scan_via_buddy = rtw_cfg80211_scan_via_buddy(padapter, request);
-
-				if (scan_via_buddy == _FALSE)
-					need_indicate_scan_done = _TRUE;
-
-				goto check_need_indicate_scan_done;
-			}
-		#endif
-
-		default :
-			RTW_ERR("site survey check code (%d) unknown\n", ssc_chk);
-			need_indicate_scan_done = _TRUE;
-			goto check_need_indicate_scan_done;
-	}
-
-	rtw_ps_deny(padapter, PS_DENY_SCAN);
-	ps_denied = _TRUE;
-	if (_FAIL == rtw_pwr_wakeup(padapter)) {
-		need_indicate_scan_done = _TRUE;
-		goto check_need_indicate_scan_done;
-	}
-
-#else
-
-
-#ifdef CONFIG_MP_INCLUDED
-	if (rtw_mp_mode_check(padapter)) {
-		RTW_INFO("MP mode block Scan request\n");
-		ret = -EPERM;
-		goto exit;
-	}
-#endif
-
-#ifdef CONFIG_P2P
-	if (pwdinfo->driver_interface == DRIVER_CFG80211) {
-		if (request->n_ssids && ssids
-			&& _rtw_memcmp(ssids[0].ssid, "DIRECT-", 7)
-			&& rtw_get_p2p_ie((u8 *)request->ie, request->ie_len, NULL, NULL)
-		) {
-			if (rtw_p2p_chk_state(pwdinfo, P2P_STATE_NONE))
-				rtw_p2p_enable(padapter, P2P_ROLE_DEVICE);
-			else {
-				rtw_p2p_set_pre_state(pwdinfo, rtw_p2p_state(pwdinfo));
-				#ifdef CONFIG_DEBUG_CFG80211
-				RTW_INFO("%s, role=%d, p2p_state=%d\n", __func__, rtw_p2p_role(pwdinfo), rtw_p2p_state(pwdinfo));
-				#endif
-			}
-			rtw_p2p_set_state(pwdinfo, P2P_STATE_LISTEN);
-
-			if (request->n_channels == 3 &&
-				request->channels[0]->hw_value == 1 &&
-				request->channels[1]->hw_value == 6 &&
-				request->channels[2]->hw_value == 11
-			)
-				social_channel = 1;
-		}
-	}
-#endif /*CONFIG_P2P*/
-
-	if (request->ie && request->ie_len > 0)
-		rtw_cfg80211_set_probe_req_wpsp2pie(padapter, (u8 *)request->ie, request->ie_len);
-
-#ifdef CONFIG_RTW_REPEATER_SON
-	if (padapter->rtw_rson_scanstage == RSON_SCAN_PROCESS) {
-		RTW_INFO(FUNC_ADPT_FMT" blocking scan for under rson scanning process\n", FUNC_ADPT_ARG(padapter));
-		need_indicate_scan_done = _TRUE;
-		goto check_need_indicate_scan_done;
-	}
-#endif
-
-	if (adapter_wdev_data(padapter)->block_scan == _TRUE) {
-		RTW_INFO(FUNC_ADPT_FMT" wdev_priv.block_scan is set\n", FUNC_ADPT_ARG(padapter));
-		need_indicate_scan_done = _TRUE;
-		goto check_need_indicate_scan_done;
-	}
-
-	rtw_ps_deny(padapter, PS_DENY_SCAN);
-	ps_denied = _TRUE;
-	if (_FAIL == rtw_pwr_wakeup(padapter)) {
-		need_indicate_scan_done = _TRUE;
-		goto check_need_indicate_scan_done;
-	}
-
-	if (rtw_is_scan_deny(padapter)) {
-		RTW_INFO(FUNC_ADPT_FMT	": scan deny\n", FUNC_ADPT_ARG(padapter));
-#ifdef CONFIG_NOTIFY_SCAN_ABORT_WITH_BUSY
-		ret = -EBUSY;
-		goto exit;
-#else
-		need_indicate_scan_done = _TRUE;
-		goto check_need_indicate_scan_done;
-#endif
-	}
-
-	/* check fw state*/
-	if (check_fwstate(pmlmepriv, WIFI_AP_STATE) == _TRUE) {
-
-#ifdef CONFIG_DEBUG_CFG80211
-		RTW_INFO(FUNC_ADPT_FMT" under WIFI_AP_STATE\n", FUNC_ADPT_ARG(padapter));
-#endif
-
-		if (check_fwstate(pmlmepriv, WIFI_UNDER_WPS | WIFI_UNDER_SURVEY | WIFI_UNDER_LINKING) == _TRUE) {
-			RTW_INFO("%s, fwstate=0x%x\n", __func__, pmlmepriv->fw_state);
-
-			if (check_fwstate(pmlmepriv, WIFI_UNDER_WPS))
-				RTW_INFO("AP mode process WPS\n");
-
-			need_indicate_scan_done = _TRUE;
-			goto check_need_indicate_scan_done;
-		}
-	}
-
-	if (check_fwstate(pmlmepriv, WIFI_UNDER_SURVEY) == _TRUE) {
-		RTW_INFO("%s, fwstate=0x%x\n", __func__, pmlmepriv->fw_state);
-		need_indicate_scan_done = _TRUE;
-		goto check_need_indicate_scan_done;
-	} else if (check_fwstate(pmlmepriv, WIFI_UNDER_LINKING) == _TRUE) {
-		RTW_INFO("%s, fwstate=0x%x\n", __func__, pmlmepriv->fw_state);
-		ret = -EBUSY;
-		goto check_need_indicate_scan_done;
-	}
-
-#ifdef CONFIG_CONCURRENT_MODE
-	if (rtw_mi_buddy_check_fwstate(padapter, WIFI_UNDER_LINKING | WIFI_UNDER_WPS)) {
-		RTW_INFO("%s exit due to buddy_intf's mlme state under linking or wps\n", __func__);
-		need_indicate_scan_done = _TRUE;
-		goto check_need_indicate_scan_done;
-
-	} else if (rtw_mi_buddy_check_fwstate(padapter, WIFI_UNDER_SURVEY)) {
-		bool scan_via_buddy = rtw_cfg80211_scan_via_buddy(padapter, request);
-
-		if (scan_via_buddy == _FALSE)
-			need_indicate_scan_done = _TRUE;
-
-		goto check_need_indicate_scan_done;
-	}
-#endif /* CONFIG_CONCURRENT_MODE */
-
-#ifdef RTW_BUSY_DENY_SCAN
-	/*
-	 * busy traffic check
-	 * Rules:
-	 * 1. If (scan interval <= BUSY_TRAFFIC_SCAN_DENY_PERIOD) always allow
-	 *    scan, otherwise goto rule 2.
-	 * 2. Deny scan if any interface is busy, otherwise allow scan.
-	 */
-	if (pmlmepriv->lastscantime
-	    && (rtw_get_passing_time_ms(pmlmepriv->lastscantime) >
-		registry_par->scan_interval_thr)
-	    && rtw_mi_busy_traffic_check(padapter)) {
-		RTW_WARN(FUNC_ADPT_FMT ": scan abort!! BusyTraffic\n",
-			 FUNC_ADPT_ARG(padapter));
- 		need_indicate_scan_done = _TRUE;
-		goto check_need_indicate_scan_done;
-	}
-#endif /* RTW_BUSY_DENY_SCAN */
-#endif
-
-#ifdef CONFIG_P2P
-	if (!rtw_p2p_chk_state(pwdinfo, P2P_STATE_NONE) && !rtw_p2p_chk_state(pwdinfo, P2P_STATE_IDLE)) {
-		rtw_p2p_set_state(pwdinfo, P2P_STATE_FIND_PHASE_SEARCH);
-
-		if (social_channel == 0)
-			rtw_p2p_findphase_ex_set(pwdinfo, P2P_FINDPHASE_EX_NONE);
-		else
-			rtw_p2p_findphase_ex_set(pwdinfo, P2P_FINDPHASE_EX_SOCIAL_LAST);
-	}
-#endif /* CONFIG_P2P */
-
-	rtw_init_sitesurvey_parm(padapter, &parm);
-
-	/* parsing request ssids, n_ssids */
-	for (i = 0; i < request->n_ssids && ssids && i < RTW_SSID_SCAN_AMOUNT; i++) {
-		#ifdef CONFIG_DEBUG_CFG80211
-		RTW_INFO("ssid=%s, len=%d\n", ssids[i].ssid, ssids[i].ssid_len);
-		#endif
-		_rtw_memcpy(&parm.ssid[i].Ssid, ssids[i].ssid, ssids[i].ssid_len);
-		parm.ssid[i].SsidLength = ssids[i].ssid_len;
-	}
-	parm.ssid_num = i;
-
-	/* no ssid entry, set the scan type as passvie */
-	if (request->n_ssids == 0)
-		parm.scan_mode = SCAN_PASSIVE;
-
-	/* parsing channels, n_channels */
-	for (i = 0; i < request->n_channels && i < RTW_CHANNEL_SCAN_AMOUNT; i++) {
-		#ifdef CONFIG_DEBUG_CFG80211
-		RTW_INFO(FUNC_ADPT_FMT CHAN_FMT"\n", FUNC_ADPT_ARG(padapter), CHAN_ARG(request->channels[i]));
-		#endif
-		parm.ch[i].hw_value = request->channels[i]->hw_value;
-		parm.ch[i].flags = request->channels[i]->flags;
-	}
-	parm.ch_num = i;
-
-	if (request->n_channels == 1) {
-		for (i = 1; i < survey_times_for_one_ch; i++)
-			_rtw_memcpy(&parm.ch[i], &parm.ch[0], sizeof(struct rtw_ieee80211_channel));
-		parm.ch_num = survey_times_for_one_ch;
-	} else if (request->n_channels <= 4) {
-		for (j = request->n_channels - 1; j >= 0; j--)
-			for (i = 0; i < survey_times; i++)
-				_rtw_memcpy(&parm.ch[j * survey_times + i], &parm.ch[j], sizeof(struct rtw_ieee80211_channel));
-		parm.ch_num = survey_times * request->n_channels;
-	}
-
-	_enter_critical_bh(&pwdev_priv->scan_req_lock, &irqL);
-	_enter_critical_bh(&pmlmepriv->lock, &irqL);
-	_status = rtw_sitesurvey_cmd(padapter, &parm);
-	if (_status == _SUCCESS)
-		pwdev_priv->scan_request = request;
-	else
-		ret = -1;
-	_exit_critical_bh(&pmlmepriv->lock, &irqL);
-	_exit_critical_bh(&pwdev_priv->scan_req_lock, &irqL);
-
-check_need_indicate_scan_done:
-	if (_TRUE == need_indicate_scan_done) {
-#if (KERNEL_VERSION(4, 8, 0) <= LINUX_VERSION_CODE)
-		struct cfg80211_scan_info info;
-
-		memset(&info, 0, sizeof(info));
-		info.aborted = 0;
-#endif
-		/* the process time of scan results must be over at least 1ms in the newly Android */
-		rtw_msleep_os(1); 
-
-		_rtw_cfg80211_surveydone_event_callback(padapter, request);
-#if (KERNEL_VERSION(4, 8, 0) <= LINUX_VERSION_CODE)
-		cfg80211_scan_done(request, &info);
-#else
-		cfg80211_scan_done(request, 0);
-#endif
-	}
-
-	if (ps_denied == _TRUE)
-		rtw_ps_deny_cancel(padapter, PS_DENY_SCAN);
-
-exit:
-#ifdef RTW_BUSY_DENY_SCAN
-	if (pmlmepriv)
-		pmlmepriv->lastscantime = rtw_get_current_time();
-#endif
-
-	return ret;
+	return -EOPNOTSUPP;
 }
+
+// static int cfg80211_rtw_scan(struct wiphy *wiphy
+// 	#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
+// 	, struct net_device *ndev
+// 	#endif
+// 	, struct cfg80211_scan_request *request)
+// {
+// 	int i;
+// 	u8 _status = _FALSE;
+// 	int ret = 0;
+// 	struct sitesurvey_parm parm;
+// 	_irqL	irqL;
+// 	u8 survey_times = 3;
+// 	u8 survey_times_for_one_ch = 6;
+// 	struct cfg80211_ssid *ssids = request->ssids;
+// 	int social_channel = 0, j = 0;
+// 	bool need_indicate_scan_done = _FALSE;
+// 	bool ps_denied = _FALSE;
+// 	u8 ssc_chk;
+// 	_adapter *padapter;
+// 	struct wireless_dev *wdev;
+// 	struct rtw_wdev_priv *pwdev_priv;
+// 	struct mlme_priv *pmlmepriv = NULL;
+// #ifdef CONFIG_P2P
+// 	struct wifidirect_info *pwdinfo;
+// #endif /* CONFIG_P2P */
+
+// #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
+// 	wdev = request->wdev;
+// 	#if defined(RTW_DEDICATED_P2P_DEVICE)
+// 	if (wdev == wiphy_to_pd_wdev(wiphy))
+// 		padapter = wiphy_to_adapter(wiphy);
+// 	else
+// 	#endif
+// 	if (wdev_to_ndev(wdev))
+// 		padapter = (_adapter *)rtw_netdev_priv(wdev_to_ndev(wdev));
+// 	else {
+// 		ret = -EINVAL;
+// 		goto exit;
+// 	}
+// #else
+// 	if (ndev == NULL) {
+// 		ret = -EINVAL;
+// 		goto exit;
+// 	}
+// 	padapter = (_adapter *)rtw_netdev_priv(ndev);
+// 	wdev = ndev_to_wdev(ndev);
+// #endif
+
+// 	pwdev_priv = adapter_wdev_data(padapter);
+// 	pmlmepriv = &padapter->mlmepriv;
+// #ifdef CONFIG_P2P
+// 	pwdinfo = &(padapter->wdinfo);
+// #endif /* CONFIG_P2P */
+
+// 	RTW_INFO(FUNC_ADPT_FMT"%s\n", FUNC_ADPT_ARG(padapter)
+// 		, wdev == wiphy_to_pd_wdev(wiphy) ? " PD" : "");
+
+// #ifdef CONFIG_RTW_SCAN_RAND
+// #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0))
+// 	if (request->flags & NL80211_SCAN_FLAG_RANDOM_ADDR) {
+// 		get_random_mask_addr(pwdev_priv->pno_mac_addr, request->mac_addr,
+// 				     request->mac_addr_mask);
+// 		print_hex_dump(KERN_DEBUG, "random mac_addr: ", 
+// 			DUMP_PREFIX_OFFSET, 16, 1, pwdev_priv->pno_mac_addr, ETH_ALEN, 1);
+// 	}
+// 	else
+// 		memset(pwdev_priv->pno_mac_addr, 0xFF, ETH_ALEN);
+
+// #endif
+// #endif
+
+
+// #if 1
+// 	ssc_chk = rtw_sitesurvey_condition_check(padapter, _TRUE);
+
+// 	if (ssc_chk == SS_DENY_MP_MODE)
+// 		goto bypass_p2p_chk;
+// #ifdef DBG_LA_MODE
+// 	if (ssc_chk == SS_DENY_LA_MODE)
+// 		goto bypass_p2p_chk;
+// #endif
+// #ifdef CONFIG_P2P
+// 	if (pwdinfo->driver_interface == DRIVER_CFG80211) {
+// 		if (request->n_ssids && ssids
+// 			&& _rtw_memcmp(ssids[0].ssid, "DIRECT-", 7)
+// 			&& rtw_get_p2p_ie((u8 *)request->ie, request->ie_len, NULL, NULL)
+// 		) {
+// 			if (rtw_p2p_chk_state(pwdinfo, P2P_STATE_NONE)) {
+// 				if (!rtw_p2p_enable(padapter, P2P_ROLE_DEVICE)) {
+// 					ret = -EOPNOTSUPP;
+// 					goto exit;
+// 				}
+// 			} else {
+// 				rtw_p2p_set_pre_state(pwdinfo, rtw_p2p_state(pwdinfo));
+// 				#ifdef CONFIG_DEBUG_CFG80211
+// 				RTW_INFO("%s, role=%d, p2p_state=%d\n", __func__, rtw_p2p_role(pwdinfo), rtw_p2p_state(pwdinfo));
+// 				#endif
+// 			}
+// 			rtw_p2p_set_state(pwdinfo, P2P_STATE_LISTEN);
+
+// 			if (request->n_channels == 3 &&
+// 				request->channels[0]->hw_value == 1 &&
+// 				request->channels[1]->hw_value == 6 &&
+// 				request->channels[2]->hw_value == 11
+// 			)
+// 				social_channel = 1;
+// 		}
+// 	}
+// #endif /*CONFIG_P2P*/
+
+// 	if (request->ie && request->ie_len > 0)
+// 		rtw_cfg80211_set_probe_req_wpsp2pie(padapter, (u8 *)request->ie, request->ie_len);
+
+// bypass_p2p_chk:
+
+// 	switch (ssc_chk) {
+// 		case SS_ALLOW :
+// 			break;
+
+// 		case SS_DENY_MP_MODE:
+// 			ret = -EPERM;
+// 			goto exit;
+// 		#ifdef DBG_LA_MODE
+// 		case SS_DENY_LA_MODE:
+// 			ret = -EPERM;
+// 			goto exit;
+// 		#endif
+// 		#ifdef CONFIG_RTW_REPEATER_SON
+// 		case SS_DENY_RSON_SCANING :
+// 		#endif
+// 		case SS_DENY_BLOCK_SCAN :
+// 		case SS_DENY_SELF_AP_UNDER_WPS :
+// 		case SS_DENY_SELF_AP_UNDER_LINKING :
+// 		case SS_DENY_SELF_AP_UNDER_SURVEY :
+// 		case SS_DENY_SELF_STA_UNDER_SURVEY :
+// 		#ifdef CONFIG_CONCURRENT_MODE
+// 		case SS_DENY_BUDDY_UNDER_LINK_WPS :
+// 		#endif
+// 		case SS_DENY_BUSY_TRAFFIC :
+// 		case SS_DENY_ADAPTIVITY:
+// 			need_indicate_scan_done = _TRUE;
+// 			goto check_need_indicate_scan_done;
+
+// 		case SS_DENY_BY_DRV :
+// 			#ifdef CONFIG_NOTIFY_SCAN_ABORT_WITH_BUSY
+// 			ret = -EBUSY;
+// 			goto exit;
+// 			#else
+// 			need_indicate_scan_done = _TRUE;
+// 			goto check_need_indicate_scan_done;
+// 			#endif
+// 			break;
+
+// 		case SS_DENY_SELF_STA_UNDER_LINKING :
+// 			ret = -EBUSY;
+// 			goto check_need_indicate_scan_done;
+
+// 		#ifdef CONFIG_CONCURRENT_MODE
+// 		case SS_DENY_BUDDY_UNDER_SURVEY :
+// 			{
+// 				bool scan_via_buddy = rtw_cfg80211_scan_via_buddy(padapter, request);
+
+// 				if (scan_via_buddy == _FALSE)
+// 					need_indicate_scan_done = _TRUE;
+
+// 				goto check_need_indicate_scan_done;
+// 			}
+// 		#endif
+
+// 		default :
+// 			RTW_ERR("site survey check code (%d) unknown\n", ssc_chk);
+// 			need_indicate_scan_done = _TRUE;
+// 			goto check_need_indicate_scan_done;
+// 	}
+
+// 	rtw_ps_deny(padapter, PS_DENY_SCAN);
+// 	ps_denied = _TRUE;
+// 	if (_FAIL == rtw_pwr_wakeup(padapter)) {
+// 		need_indicate_scan_done = _TRUE;
+// 		goto check_need_indicate_scan_done;
+// 	}
+
+// #else
+
+
+// #ifdef CONFIG_MP_INCLUDED
+// 	if (rtw_mp_mode_check(padapter)) {
+// 		RTW_INFO("MP mode block Scan request\n");
+// 		ret = -EPERM;
+// 		goto exit;
+// 	}
+// #endif
+
+// #ifdef CONFIG_P2P
+// 	if (pwdinfo->driver_interface == DRIVER_CFG80211) {
+// 		if (request->n_ssids && ssids
+// 			&& _rtw_memcmp(ssids[0].ssid, "DIRECT-", 7)
+// 			&& rtw_get_p2p_ie((u8 *)request->ie, request->ie_len, NULL, NULL)
+// 		) {
+// 			if (rtw_p2p_chk_state(pwdinfo, P2P_STATE_NONE))
+// 				rtw_p2p_enable(padapter, P2P_ROLE_DEVICE);
+// 			else {
+// 				rtw_p2p_set_pre_state(pwdinfo, rtw_p2p_state(pwdinfo));
+// 				#ifdef CONFIG_DEBUG_CFG80211
+// 				RTW_INFO("%s, role=%d, p2p_state=%d\n", __func__, rtw_p2p_role(pwdinfo), rtw_p2p_state(pwdinfo));
+// 				#endif
+// 			}
+// 			rtw_p2p_set_state(pwdinfo, P2P_STATE_LISTEN);
+
+// 			if (request->n_channels == 3 &&
+// 				request->channels[0]->hw_value == 1 &&
+// 				request->channels[1]->hw_value == 6 &&
+// 				request->channels[2]->hw_value == 11
+// 			)
+// 				social_channel = 1;
+// 		}
+// 	}
+// #endif /*CONFIG_P2P*/
+
+// 	if (request->ie && request->ie_len > 0)
+// 		rtw_cfg80211_set_probe_req_wpsp2pie(padapter, (u8 *)request->ie, request->ie_len);
+
+// #ifdef CONFIG_RTW_REPEATER_SON
+// 	if (padapter->rtw_rson_scanstage == RSON_SCAN_PROCESS) {
+// 		RTW_INFO(FUNC_ADPT_FMT" blocking scan for under rson scanning process\n", FUNC_ADPT_ARG(padapter));
+// 		need_indicate_scan_done = _TRUE;
+// 		goto check_need_indicate_scan_done;
+// 	}
+// #endif
+
+// 	if (adapter_wdev_data(padapter)->block_scan == _TRUE) {
+// 		RTW_INFO(FUNC_ADPT_FMT" wdev_priv.block_scan is set\n", FUNC_ADPT_ARG(padapter));
+// 		need_indicate_scan_done = _TRUE;
+// 		goto check_need_indicate_scan_done;
+// 	}
+
+// 	rtw_ps_deny(padapter, PS_DENY_SCAN);
+// 	ps_denied = _TRUE;
+// 	if (_FAIL == rtw_pwr_wakeup(padapter)) {
+// 		need_indicate_scan_done = _TRUE;
+// 		goto check_need_indicate_scan_done;
+// 	}
+
+// 	if (rtw_is_scan_deny(padapter)) {
+// 		RTW_INFO(FUNC_ADPT_FMT	": scan deny\n", FUNC_ADPT_ARG(padapter));
+// #ifdef CONFIG_NOTIFY_SCAN_ABORT_WITH_BUSY
+// 		ret = -EBUSY;
+// 		goto exit;
+// #else
+// 		need_indicate_scan_done = _TRUE;
+// 		goto check_need_indicate_scan_done;
+// #endif
+// 	}
+
+// 	/* check fw state*/
+// 	if (check_fwstate(pmlmepriv, WIFI_AP_STATE) == _TRUE) {
+
+// #ifdef CONFIG_DEBUG_CFG80211
+// 		RTW_INFO(FUNC_ADPT_FMT" under WIFI_AP_STATE\n", FUNC_ADPT_ARG(padapter));
+// #endif
+
+// 		if (check_fwstate(pmlmepriv, WIFI_UNDER_WPS | WIFI_UNDER_SURVEY | WIFI_UNDER_LINKING) == _TRUE) {
+// 			RTW_INFO("%s, fwstate=0x%x\n", __func__, pmlmepriv->fw_state);
+
+// 			if (check_fwstate(pmlmepriv, WIFI_UNDER_WPS))
+// 				RTW_INFO("AP mode process WPS\n");
+
+// 			need_indicate_scan_done = _TRUE;
+// 			goto check_need_indicate_scan_done;
+// 		}
+// 	}
+
+// 	if (check_fwstate(pmlmepriv, WIFI_UNDER_SURVEY) == _TRUE) {
+// 		RTW_INFO("%s, fwstate=0x%x\n", __func__, pmlmepriv->fw_state);
+// 		need_indicate_scan_done = _TRUE;
+// 		goto check_need_indicate_scan_done;
+// 	} else if (check_fwstate(pmlmepriv, WIFI_UNDER_LINKING) == _TRUE) {
+// 		RTW_INFO("%s, fwstate=0x%x\n", __func__, pmlmepriv->fw_state);
+// 		ret = -EBUSY;
+// 		goto check_need_indicate_scan_done;
+// 	}
+
+// #ifdef CONFIG_CONCURRENT_MODE
+// 	if (rtw_mi_buddy_check_fwstate(padapter, WIFI_UNDER_LINKING | WIFI_UNDER_WPS)) {
+// 		RTW_INFO("%s exit due to buddy_intf's mlme state under linking or wps\n", __func__);
+// 		need_indicate_scan_done = _TRUE;
+// 		goto check_need_indicate_scan_done;
+
+// 	} else if (rtw_mi_buddy_check_fwstate(padapter, WIFI_UNDER_SURVEY)) {
+// 		bool scan_via_buddy = rtw_cfg80211_scan_via_buddy(padapter, request);
+
+// 		if (scan_via_buddy == _FALSE)
+// 			need_indicate_scan_done = _TRUE;
+
+// 		goto check_need_indicate_scan_done;
+// 	}
+// #endif /* CONFIG_CONCURRENT_MODE */
+
+// #ifdef RTW_BUSY_DENY_SCAN
+// 	/*
+// 	 * busy traffic check
+// 	 * Rules:
+// 	 * 1. If (scan interval <= BUSY_TRAFFIC_SCAN_DENY_PERIOD) always allow
+// 	 *    scan, otherwise goto rule 2.
+// 	 * 2. Deny scan if any interface is busy, otherwise allow scan.
+// 	 */
+// 	if (pmlmepriv->lastscantime
+// 	    && (rtw_get_passing_time_ms(pmlmepriv->lastscantime) >
+// 		registry_par->scan_interval_thr)
+// 	    && rtw_mi_busy_traffic_check(padapter)) {
+// 		RTW_WARN(FUNC_ADPT_FMT ": scan abort!! BusyTraffic\n",
+// 			 FUNC_ADPT_ARG(padapter));
+//  		need_indicate_scan_done = _TRUE;
+// 		goto check_need_indicate_scan_done;
+// 	}
+// #endif /* RTW_BUSY_DENY_SCAN */
+// #endif
+
+// #ifdef CONFIG_P2P
+// 	if (!rtw_p2p_chk_state(pwdinfo, P2P_STATE_NONE) && !rtw_p2p_chk_state(pwdinfo, P2P_STATE_IDLE)) {
+// 		rtw_p2p_set_state(pwdinfo, P2P_STATE_FIND_PHASE_SEARCH);
+
+// 		if (social_channel == 0)
+// 			rtw_p2p_findphase_ex_set(pwdinfo, P2P_FINDPHASE_EX_NONE);
+// 		else
+// 			rtw_p2p_findphase_ex_set(pwdinfo, P2P_FINDPHASE_EX_SOCIAL_LAST);
+// 	}
+// #endif /* CONFIG_P2P */
+
+// 	rtw_init_sitesurvey_parm(padapter, &parm);
+
+// 	/* parsing request ssids, n_ssids */
+// 	for (i = 0; i < request->n_ssids && ssids && i < RTW_SSID_SCAN_AMOUNT; i++) {
+// 		#ifdef CONFIG_DEBUG_CFG80211
+// 		RTW_INFO("ssid=%s, len=%d\n", ssids[i].ssid, ssids[i].ssid_len);
+// 		#endif
+// 		_rtw_memcpy(&parm.ssid[i].Ssid, ssids[i].ssid, ssids[i].ssid_len);
+// 		parm.ssid[i].SsidLength = ssids[i].ssid_len;
+// 	}
+// 	parm.ssid_num = i;
+
+// 	/* no ssid entry, set the scan type as passvie */
+// 	if (request->n_ssids == 0)
+// 		parm.scan_mode = SCAN_PASSIVE;
+
+// 	/* parsing channels, n_channels */
+// 	for (i = 0; i < request->n_channels && i < RTW_CHANNEL_SCAN_AMOUNT; i++) {
+// 		#ifdef CONFIG_DEBUG_CFG80211
+// 		RTW_INFO(FUNC_ADPT_FMT CHAN_FMT"\n", FUNC_ADPT_ARG(padapter), CHAN_ARG(request->channels[i]));
+// 		#endif
+// 		parm.ch[i].hw_value = request->channels[i]->hw_value;
+// 		parm.ch[i].flags = request->channels[i]->flags;
+// 	}
+// 	parm.ch_num = i;
+
+// 	if (request->n_channels == 1) {
+// 		for (i = 1; i < survey_times_for_one_ch; i++)
+// 			_rtw_memcpy(&parm.ch[i], &parm.ch[0], sizeof(struct rtw_ieee80211_channel));
+// 		parm.ch_num = survey_times_for_one_ch;
+// 	} else if (request->n_channels <= 4) {
+// 		for (j = request->n_channels - 1; j >= 0; j--)
+// 			for (i = 0; i < survey_times; i++)
+// 				_rtw_memcpy(&parm.ch[j * survey_times + i], &parm.ch[j], sizeof(struct rtw_ieee80211_channel));
+// 		parm.ch_num = survey_times * request->n_channels;
+// 	}
+
+// 	_enter_critical_bh(&pwdev_priv->scan_req_lock, &irqL);
+// 	_enter_critical_bh(&pmlmepriv->lock, &irqL);
+// 	_status = rtw_sitesurvey_cmd(padapter, &parm);
+// 	if (_status == _SUCCESS)
+// 		pwdev_priv->scan_request = request;
+// 	else
+// 		ret = -1;
+// 	_exit_critical_bh(&pmlmepriv->lock, &irqL);
+// 	_exit_critical_bh(&pwdev_priv->scan_req_lock, &irqL);
+
+// check_need_indicate_scan_done:
+// 	if (_TRUE == need_indicate_scan_done) {
+// #if (KERNEL_VERSION(4, 8, 0) <= LINUX_VERSION_CODE)
+// 		struct cfg80211_scan_info info;
+
+// 		memset(&info, 0, sizeof(info));
+// 		info.aborted = 0;
+// #endif
+// 		/* the process time of scan results must be over at least 1ms in the newly Android */
+// 		rtw_msleep_os(1); 
+
+// 		_rtw_cfg80211_surveydone_event_callback(padapter, request);
+// #if (KERNEL_VERSION(4, 8, 0) <= LINUX_VERSION_CODE)
+// 		cfg80211_scan_done(request, &info);
+// #else
+// 		cfg80211_scan_done(request, 0);
+// #endif
+// 	}
+
+// 	if (ps_denied == _TRUE)
+// 		rtw_ps_deny_cancel(padapter, PS_DENY_SCAN);
+
+// exit:
+// #ifdef RTW_BUSY_DENY_SCAN
+// 	if (pmlmepriv)
+// 		pmlmepriv->lastscantime = rtw_get_current_time();
+// #endif
+
+// 	return ret;
+// }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)) && \
     defined(CONFIG_RTW_ABORT_SCAN)

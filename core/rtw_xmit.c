@@ -4867,7 +4867,7 @@ static void do_queue_select(_adapter	*padapter, struct pkt_attrib *pattrib)
  *	0	success, hardware will handle this xmit frame(packet)
  *	<0	fail
  */
- #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 24))
 s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 {
 	u16 frame_ctl;
@@ -4883,67 +4883,91 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 	u8 dummybuf[32];
 	int len = skb->len, rtap_len;
 
-
 	rtw_mstat_update(MSTAT_TYPE_SKB, MSTAT_ALLOC_SUCCESS, skb->truesize);
 
-#ifndef CONFIG_CUSTOMER_ALIBABA_GENERAL
-	if (unlikely(skb->len < sizeof(struct ieee80211_radiotap_header)))
-		goto fail;
-
+	/*
+	 * Radiotap handling:
+	 * Accept either:
+	 *  - radiotap-wrapped frames (strip radiotap), or
+	 *  - raw 802.11 frames (no radiotap present).
+	 *
+	 * Logic: peek the radiotap header; if it looks valid and skb length
+	 * covers the reported radiotap length, strip it. Otherwise treat the
+	 * whole skb as the 802.11 frame.
+	 */
 	_rtw_open_pktfile((_pkt *)skb, &pktfile);
-	_rtw_pktfile_read(&pktfile, (u8 *)(&rtap_hdr), sizeof(struct ieee80211_radiotap_header));
-	rtap_len = ieee80211_get_radiotap_len((u8 *)(&rtap_hdr));
-	if (unlikely(rtap_hdr.it_version))
-		goto fail;
-
-	if (unlikely(skb->len < rtap_len))
-		goto fail;
-
-#ifndef CONFIG_MONITOR_MODE_XMIT
-	if (rtap_len != 12) {
-		RTW_INFO("radiotap len (should be 14): %d\n", rtap_len);
-		goto fail;
+	if (skb->len >= (int)sizeof(struct ieee80211_radiotap_header)) {
+		/* read radiotap header (does not advance pktfile pointer beyond header) */
+		_rtw_pktfile_read(&pktfile, (u8 *)(&rtap_hdr), sizeof(struct ieee80211_radiotap_header));
+		rtap_len = ieee80211_get_radiotap_len((u8 *)(&rtap_hdr));
+		/* Basic sanity checks for a radiotap header: version==0 and reasonable length */
+		if (rtap_hdr.it_version == 0 && rtap_len >= (int)sizeof(struct ieee80211_radiotap_header) && rtap_len <= skb->len) {
+			/* consume remaining radiotap bytes */
+			if (rtap_len - (int)sizeof(struct ieee80211_radiotap_header) > 0)
+				_rtw_pktfile_read(&pktfile, dummybuf, rtap_len - sizeof(struct ieee80211_radiotap_header));
+			len = len - rtap_len;
+		} else {
+			/* Not a valid radiotap or not wrapped — reset pktfile to start and send whole skb */
+			_rtw_open_pktfile((_pkt *)skb, &pktfile);
+			len = skb->len;
+		}
+	} else {
+		/* too small to contain radiotap header — treat as raw 802.11 */
+		_rtw_open_pktfile((_pkt *)skb, &pktfile);
+		len = skb->len;
 	}
-#endif /* CONFIG_MONITOR_MODE_XMIT */
-	_rtw_pktfile_read(&pktfile, dummybuf, rtap_len-sizeof(struct ieee80211_radiotap_header));
-	len = len - rtap_len;
-#endif
+
+	/* minimal sanity for an 802.11 frame (MAC header >= 24 bytes) */
+	if (len < 24)
+		goto fail;
+
 	pmgntframe = alloc_mgtxmitframe(pxmitpriv);
 	if (pmgntframe == NULL) {
 		rtw_udelay_os(500);
 		goto fail;
 	}
 
+	/* preserve existing layout: clear WLANHDR_OFFSET + TXDESC_OFFSET */
 	_rtw_memset(pmgntframe->buf_addr, 0, WLANHDR_OFFSET + TXDESC_OFFSET);
 	pframe = (u8 *)(pmgntframe->buf_addr) + TXDESC_OFFSET;
-//	_rtw_memcpy(pframe, (void *)checking, len);
 	_rtw_pktfile_read(&pktfile, pframe, len);
-
 
 	/* Check DATA/MGNT frames */
 	pwlanhdr = (struct rtw_ieee80211_hdr *)pframe;
 	frame_ctl = le16_to_cpu(pwlanhdr->frame_ctl);
-	if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_DATA) {
+	pattrib = &pmgntframe->attrib;
 
-		pattrib = &pmgntframe->attrib;
+	if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_DATA) {
+		/* data frame attributes for monitor injection */
 		update_monitor_frame_attrib(padapter, pattrib);
 
 		if (is_broadcast_mac_addr(pwlanhdr->addr3) || is_broadcast_mac_addr(pwlanhdr->addr1))
 			pattrib->rate = MGN_24M;
 
 	} else {
-
-		pattrib = &pmgntframe->attrib;
+		/* management/control frames: use mgnt attribute initializer */
 		update_mgntframe_attrib(padapter, pattrib);
-
 	}
+
+	/* Preserve the sequence number from the user-supplied 802.11 header.
+	 * Mask to 12 bits to be safe.
+	 */
+	{
+		u16 user_seq = GetSequence(pwlanhdr);
+		pattrib->seqnum = user_seq & 0x0fff;
+	}
+
 	pattrib->retry_ctrl = _FALSE;
 	pattrib->pktlen = len;
-	pmlmeext->mgnt_seq = GetSequence(pwlanhdr);
-	pattrib->seqnum = pmlmeext->mgnt_seq;
-	pmlmeext->mgnt_seq++;
 	pattrib->last_txcmdsz = pattrib->pktlen;
 
+	/* Debug: print brief info about transmitted frame (optional) */
+	RTW_INFO("monitor_xmit: len=%d type=%s seq=%u\n",
+		 len,
+		 ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_DATA) ? "DATA" : "MGNT",
+		 pattrib->seqnum);
+
+	/* Submit to transmit path */
 	dump_mgntframe(padapter, pmgntframe);
 
 fail:
@@ -4951,6 +4975,92 @@ fail:
 	return 0;
 }
 #endif
+
+
+//  #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 24))
+// s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
+// {
+// 	u16 frame_ctl;
+// 	struct ieee80211_radiotap_header rtap_hdr;
+// 	_adapter *padapter = (_adapter *)rtw_netdev_priv(ndev);
+// 	struct pkt_file pktfile;
+// 	struct rtw_ieee80211_hdr *pwlanhdr;
+// 	struct pkt_attrib	*pattrib;
+// 	struct xmit_frame		*pmgntframe;
+// 	struct mlme_ext_priv	*pmlmeext = &(padapter->mlmeextpriv);
+// 	struct xmit_priv	*pxmitpriv = &(padapter->xmitpriv);
+// 	unsigned char	*pframe;
+// 	u8 dummybuf[32];
+// 	int len = skb->len, rtap_len;
+
+
+// 	rtw_mstat_update(MSTAT_TYPE_SKB, MSTAT_ALLOC_SUCCESS, skb->truesize);
+
+// #ifndef CONFIG_CUSTOMER_ALIBABA_GENERAL
+// 	if (unlikely(skb->len < sizeof(struct ieee80211_radiotap_header)))
+// 		goto fail;
+
+// 	_rtw_open_pktfile((_pkt *)skb, &pktfile);
+// 	_rtw_pktfile_read(&pktfile, (u8 *)(&rtap_hdr), sizeof(struct ieee80211_radiotap_header));
+// 	rtap_len = ieee80211_get_radiotap_len((u8 *)(&rtap_hdr));
+// 	if (unlikely(rtap_hdr.it_version))
+// 		goto fail;
+
+// 	if (unlikely(skb->len < rtap_len))
+// 		goto fail;
+
+// #ifndef CONFIG_MONITOR_MODE_XMIT
+// 	if (rtap_len != 12) {
+// 		RTW_INFO("radiotap len (should be 14): %d\n", rtap_len);
+// 		goto fail;
+// 	}
+// #endif /* CONFIG_MONITOR_MODE_XMIT */
+// 	_rtw_pktfile_read(&pktfile, dummybuf, rtap_len-sizeof(struct ieee80211_radiotap_header));
+// 	len = len - rtap_len;
+// #endif
+// 	pmgntframe = alloc_mgtxmitframe(pxmitpriv);
+// 	if (pmgntframe == NULL) {
+// 		rtw_udelay_os(500);
+// 		goto fail;
+// 	}
+
+// 	_rtw_memset(pmgntframe->buf_addr, 0, WLANHDR_OFFSET + TXDESC_OFFSET);
+// 	pframe = (u8 *)(pmgntframe->buf_addr) + TXDESC_OFFSET;
+// //	_rtw_memcpy(pframe, (void *)checking, len);
+// 	_rtw_pktfile_read(&pktfile, pframe, len);
+
+
+// 	/* Check DATA/MGNT frames */
+// 	pwlanhdr = (struct rtw_ieee80211_hdr *)pframe;
+// 	frame_ctl = le16_to_cpu(pwlanhdr->frame_ctl);
+// 	if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_DATA) {
+
+// 		pattrib = &pmgntframe->attrib;
+// 		update_monitor_frame_attrib(padapter, pattrib);
+
+// 		if (is_broadcast_mac_addr(pwlanhdr->addr3) || is_broadcast_mac_addr(pwlanhdr->addr1))
+// 			pattrib->rate = MGN_24M;
+
+// 	} else {
+
+// 		pattrib = &pmgntframe->attrib;
+// 		update_mgntframe_attrib(padapter, pattrib);
+
+// 	}
+// 	pattrib->retry_ctrl = _FALSE;
+// 	pattrib->pktlen = len;
+// 	pmlmeext->mgnt_seq = GetSequence(pwlanhdr);
+// 	pattrib->seqnum = pmlmeext->mgnt_seq;
+// 	pmlmeext->mgnt_seq++;
+// 	pattrib->last_txcmdsz = pattrib->pktlen;
+
+// 	dump_mgntframe(padapter, pmgntframe);
+
+// fail:
+// 	rtw_skb_free(skb);
+// 	return 0;
+// }
+// #endif
 
 /*
  *
